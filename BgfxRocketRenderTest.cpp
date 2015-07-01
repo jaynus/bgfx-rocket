@@ -1,5 +1,5 @@
-#include "Render/RocketBgfxInterface.hpp"
-#include "Render/RocketSystemInterface.hpp"
+#include "RocketBgfxInterface.hpp"
+#include "RocketSystemInterface.hpp"
 
 #include "vs_BgfxRocketRenderTest.bin.h"
 #include "fs_BgfxRocketRenderTestColor.bin.h"
@@ -16,7 +16,6 @@
 #include <Rocket/Debugger.h>
 #include <Rocket/Controls.h>
 
-#include "Logging.hpp"
 Rocket::Core::Context* rocketContext = NULL;
 
 bool leftDown = false;
@@ -114,6 +113,17 @@ int _main_(int /*_argc*/, char** /*_argv*/) {
     float proj[16];
     bx::mtxProj(proj, 60.0f, float(width) / float(height), 0.1f, 100.0f);
 
+    int64_t timeOffset = bx::getHPCounter();
+    entry::MouseState mouseState;
+    
+    cameraCreate();
+    float initialPos[3] = { 0.0f, 18.0f, -40.0f };
+	cameraSetPosition(initialPos);
+	cameraSetVerticalAngle(-0.35f);
+
+    //
+    // Begin librocket integration code!
+    //
     // initialize the rocket interface
     RocketBgfxInterface * bgfxRocket = new RocketBgfxInterface(1, rocketColorProgram, rocketTextureProgram, width, height);
     RocketSystemInterface * rocketSystem = new RocketSystemInterface();
@@ -147,16 +157,11 @@ int _main_(int /*_argc*/, char** /*_argv*/) {
     if (document != NULL) {
         document->Show();
     }
-
-    // bgfx sample framework code
-    int64_t timeOffset = bx::getHPCounter();
-    entry::MouseState mouseState;
     
-    cameraCreate();
-    float initialPos[3] = { 0.0f, 18.0f, -40.0f };
-	cameraSetPosition(initialPos);
-	cameraSetVerticalAngle(-0.35f);
-
+    // 
+    // End librocket integration code
+    //
+    
     while (!entry::processEvents(width, height, debug, reset, &mouseState) )
 	{
 		int64_t now = bx::getHPCounter();
@@ -172,7 +177,7 @@ int _main_(int /*_argc*/, char** /*_argv*/) {
 		// Use debug font to print information about this example.
 		bgfx::dbgTextClear();
         
-		bgfx::dbgTextPrintf(0, 1, 0x4f, "Renderer: %s", 
+		bgfx::dbgTextPrintf(0, 1, 0x4f, "librocket integration test : Renderer: %s", 
             bgfx::getRendererName(bgfx::getRendererType()));
 		bgfx::dbgTextPrintf(0, 2, 0x0f, "Frame: %.2f[ms], %.2f[fps]", 
             double(frameTime)*toMs, 
@@ -184,16 +189,18 @@ int _main_(int /*_argc*/, char** /*_argv*/) {
 
         bx::mtxLookAt(view, eye, at);
 
- 
         bgfx::setViewTransform(0, view, proj);
         bgfx::setViewRect(0, 0, 0, width, height);
         
+        // dummy submit
         bgfx::submit(0);
 
+        // Pass librocket the buttons, and then render it.
         injectRocketButtons(rocketContext, mouseState);
         rocketContext->Update();
         rocketContext->Render();
-
+        
+        bgfxRocket->frame();
 		bgfx::frame();
 	}
 
