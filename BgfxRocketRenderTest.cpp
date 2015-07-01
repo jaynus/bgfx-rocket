@@ -1,214 +1,286 @@
 #include "RocketBgfxInterface.hpp"
-#include "RocketSystemInterface.hpp"
 
-#include "vs_BgfxRocketRenderTest.bin.h"
-#include "fs_BgfxRocketRenderTestColor.bin.h"
-#include "fs_BgfxRocketRenderTestTexture.bin.h"
-
-#include "common.h"
-#include "bgfx_utils.h"
-#include "camera.h"
-
+#include <stdexcept>
 #include <iostream>
+#include <bx/fpumath.h>
 
-#define ROCKET_STATIC_LIB
-#include <Rocket/Core.h>
-#include <Rocket/Debugger.h>
-#include <Rocket/Controls.h>
+#include <stb_image.h>
 
-Rocket::Core::Context* rocketContext = NULL;
-
-bool leftDown = false;
-bool rightDown = false;
-
-void injectRocketButtons(Rocket::Core::Context*, entry::MouseState mouseState) {
-    rocketContext->ProcessMouseMove(mouseState.m_mx, mouseState.m_my, 0);
-    if (mouseState.m_buttons[entry::MouseButton::Left] && !leftDown) {
-        rocketContext->ProcessMouseButtonDown(0, 0);
-        leftDown = true;
-    } else if (!mouseState.m_buttons[entry::MouseButton::Left] && leftDown) {
-        rocketContext->ProcessMouseButtonUp(0, 0);
-        leftDown = false;
-    }
-
-    if (mouseState.m_buttons[entry::MouseButton::Right] && !rightDown) {
-        rocketContext->ProcessMouseButtonDown(1, 0);
-        rightDown = true;
-    }
-    else if (!mouseState.m_buttons[entry::MouseButton::Right] && rightDown) {
-        rocketContext->ProcessMouseButtonUp(1, 0);
-        rightDown = false;
-    }
-
-    return;
-}
 using namespace space::Render;
 
-int _main_(int /*_argc*/, char** /*_argv*/) {
-    uint32_t width = 1280;
-	uint32_t height = 720;
-	uint32_t debug = BGFX_DEBUG_TEXT;
-	uint32_t reset = BGFX_RESET_MSAA_X16;
+bgfx::VertexDecl space::Render::RocketBgfxInterface::RocketVertexData::ms_decl;
 
-	bgfx::init(bgfx::RendererType::Direct3D11);
-	bgfx::reset(width, height, reset);
+RocketBgfxInterface::RocketBgfxInterface(int viewNumber, float _width, float _height, bool configureView)
+    : _currentTextureIndex(1), _viewNumber(viewNumber), _width(_width), _height(_height)
+{
+    RocketVertexData::init();
+    if (configureView) setViewParameters();
 
-	// Enable debug text.
-	bgfx::setDebug(debug);
+    _dynamicVertexBuffer = bgfx::createDynamicVertexBuffer(MAX_DYNAMIC_VERTICES, RocketVertexData::ms_decl);
+    _dynamicIndexBuffer = bgfx::createDynamicIndexBuffer(MAX_DYNAMIC_INDICES, BGFX_BUFFER_INDEX32);
+}
+RocketBgfxInterface::RocketBgfxInterface(int viewNumber, bgfx::ProgramHandle colorShader, bgfx::ProgramHandle textureShader, float _width, float _height, bool configureView)
+    : _colorShader(colorShader), _textureShader(textureShader), _width(_width), _height(_height), _currentTextureIndex(1), _viewNumber(viewNumber), _scissorParams({ false, 0, 0, 0, 0 })
+{
+    RocketVertexData::init();
+    if (configureView) setViewParameters();
 
-	// Set view 0 clear state.
-	bgfx::setViewClear(0
-		, BGFX_CLEAR_COLOR|BGFX_CLEAR_DEPTH
-		, 0xffffffff
-		, 1.0f
-		, 0
-		);
-    
-    // Load the shaders
-    const bgfx::Memory* vs_BgfxRocketRender;
-    const bgfx::Memory* fs_BgfxRocketRenderColor;
-    const bgfx::Memory* fs_BgfxRocketRenderTexture;
-
-    switch (bgfx::getRendererType())
-    {
-    case bgfx::RendererType::Direct3D9:
-        vs_BgfxRocketRender = bgfx::makeRef(vs_BgfxRocketRenderTest_dx9, sizeof(vs_BgfxRocketRenderTest_dx9));
-        fs_BgfxRocketRenderColor = bgfx::makeRef(fs_BgfxRocketRenderTestColor_dx9, sizeof(fs_BgfxRocketRenderTestColor_dx9));
-        fs_BgfxRocketRenderTexture = bgfx::makeRef(fs_BgfxRocketRenderTestTexture_dx9, sizeof(fs_BgfxRocketRenderTestTexture_dx9));
-        break;
-
-    case bgfx::RendererType::Direct3D11:
-    case bgfx::RendererType::Direct3D12:
-        vs_BgfxRocketRender = bgfx::makeRef(vs_BgfxRocketRenderTest_dx11, sizeof(vs_BgfxRocketRenderTest_dx11));
-        fs_BgfxRocketRenderColor = bgfx::makeRef(fs_BgfxRocketRenderTestColor_dx11, sizeof(fs_BgfxRocketRenderTestColor_dx11));
-        fs_BgfxRocketRenderTexture = bgfx::makeRef(fs_BgfxRocketRenderTestTexture_dx11, sizeof(fs_BgfxRocketRenderTestTexture_dx11));
-        break;
-
-    default:
-        vs_BgfxRocketRender = bgfx::makeRef(vs_BgfxRocketRenderTest_glsl, sizeof(vs_BgfxRocketRenderTest_glsl));
-        fs_BgfxRocketRenderColor = bgfx::makeRef(fs_BgfxRocketRenderTestColor_glsl, sizeof(fs_BgfxRocketRenderTestColor_glsl));
-        fs_BgfxRocketRenderTexture = bgfx::makeRef(fs_BgfxRocketRenderTestTexture_glsl, sizeof(fs_BgfxRocketRenderTestTexture_glsl));
-        break;
-    }
-    bgfx::ShaderHandle vsh = bgfx::createShader(vs_BgfxRocketRender);
-	bgfx::ShaderHandle fsh_color = bgfx::createShader(fs_BgfxRocketRenderColor);
-    bgfx::ShaderHandle fsh_texture = bgfx::createShader(fs_BgfxRocketRenderTexture);
-	
-    // Create program from shaders.
-	bgfx::ProgramHandle rocketColorProgram = bgfx::createProgram(vsh, fsh_color, true);
-    bgfx::ProgramHandle rocketTextureProgram = bgfx::createProgram(vsh, fsh_texture, true);
-
-    // Setup UI View
-    
-    bgfx::setViewClear(1
-        , BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH
-        , 0x3070F0FF
-        );
-
+    _dynamicVertexBuffer = bgfx::createDynamicVertexBuffer(MAX_DYNAMIC_VERTICES, RocketVertexData::ms_decl);
+    _dynamicIndexBuffer = bgfx::createDynamicIndexBuffer(MAX_DYNAMIC_INDICES, BGFX_BUFFER_INDEX32);
+}
+//
+// We render the librocket UI into a seperate vview, thus keeping it seperated from any other rendering
+// This is a managing helper function to compile the orthographic 2d graphics view. 
+// You could skip this call (constructor configureView=false, and manage the view transformations yourself - thus allowing for view/framebuffer RTT UI elements.
+void RocketBgfxInterface::setViewParameters(int viewNumber) {
+    // Assign the view 
     float orthoView[16] = { 0 };
     float identity[16] = { 0 };
     bx::mtxIdentity(identity);
-    bx::mtxOrtho(orthoView, 0.0f, width, height, 0.0f, -1.0f, 1.0f);
+    bx::mtxOrtho(orthoView, 0.0f, _width, _height, 0.0f, -1.0f, 1.0f);
+    if (viewNumber < 0) viewNumber = _viewNumber;
 
-    float proj[16];
-    bx::mtxProj(proj, 60.0f, float(width) / float(height), 0.1f, 100.0f);
-
-    int64_t timeOffset = bx::getHPCounter();
-    entry::MouseState mouseState;
-    
-    cameraCreate();
-    float initialPos[3] = { 0.0f, 18.0f, -40.0f };
-	cameraSetPosition(initialPos);
-	cameraSetVerticalAngle(-0.35f);
-
-    //
-    // Begin librocket integration code!
-    //
-    // initialize the rocket interface
-    RocketBgfxInterface * bgfxRocket = new RocketBgfxInterface(1, rocketColorProgram, rocketTextureProgram, width, height);
-    RocketSystemInterface * rocketSystem = new RocketSystemInterface();
-    
-    bgfxRocket->setViewParameters();
-
-    Rocket::Core::SetRenderInterface(bgfxRocket);
-    Rocket::Core::SetSystemInterface(rocketSystem);
-    
-    Rocket::Core::Initialise();
-    Rocket::Controls::Initialise();
-    Rocket::Core::Log::Initialise();
-    
-    rocketContext = Rocket::Core::CreateContext("main", Rocket::Core::Vector2i(width, height));
-    Rocket::Debugger::Initialise(rocketContext);
-    
-    Rocket::Core::String font_names[4];
-    font_names[0] = "Delicious-Roman.otf";
-    font_names[1] = "Delicious-Italic.otf";
-    font_names[2] = "Delicious-Bold.otf";
-    font_names[3] = "Delicious-BoldItalic.otf";
-
-    for (int i = 0; i < sizeof(font_names) / sizeof(Rocket::Core::String); i++)
-    {
-        if (Rocket::Core::FontDatabase::LoadFontFace(Rocket::Core::String("assets/") + font_names[i])) {
-            std::cout << font_names[0].CString() << " loaded\n";
+    bgfx::setViewTransform(viewNumber, orthoView, identity);
+    bgfx::setViewRect(viewNumber, 0, 0, _width, _height);
+}
+RocketBgfxInterface::~RocketBgfxInterface() {
+    if (_textureBuffers.size()) {
+        for (const auto & buffer : _textureBuffers) {
+            bgfx::destroyTexture(buffer.second);
         }
+        _textureBuffers.clear();
     }
 
-    Rocket::Core::ElementDocument* document = rocketContext->LoadDocument("data/test.rml");
-    if (document != NULL) {
-        document->Show();
+    for (auto item : _geometry) {
+        bgfx::VertexBufferHandle vertexBuffer{ bgfx::invalidHandle };
+        bgfx::IndexBufferHandle indexBuffer{ bgfx::invalidHandle };
+        bgfx::TextureHandle texture{ bgfx::invalidHandle };
+
+        std::tie(vertexBuffer, indexBuffer, texture) = item.second;
+
+        bgfx::destroyVertexBuffer(vertexBuffer);
+        bgfx::destroyIndexBuffer(indexBuffer);
+    }
+    _geometry.clear();
+
+    bgfx::destroyDynamicVertexBuffer(_dynamicVertexBuffer);
+    bgfx::destroyDynamicIndexBuffer(_dynamicIndexBuffer);
+}
+// Draw and then clear the dynamic geometry queue.
+// @TODO: This is still multiple dynamic geomery draw calls. We need to actually check index/texture buffers and combine them if they match.
+void RocketBgfxInterface::frame() {
+    if (_batchGeometry.size() < 1)
+        return;
+
+    for (auto item : _batchGeometry) {
+        const bgfx::Memory * vertexBuffer;
+        const bgfx::Memory * indexBuffer;
+        Rocket::Core::Vector2f translation;
+        bgfx::TextureHandle texture{ bgfx::invalidHandle };
+        bgfx::ProgramHandle _shader = _colorShader;
+
+        std::tie(vertexBuffer, indexBuffer, texture, translation) = item;
+
+        bgfx::updateDynamicVertexBuffer(_dynamicVertexBuffer, vertexBuffer);
+        if (indexBuffer != nullptr) {
+            bgfx::updateDynamicIndexBuffer(_dynamicIndexBuffer, indexBuffer);
+        }
+        
+        if (bgfx::isValid(texture)) {
+            bgfx::UniformHandle s_texture0 = bgfx::createUniform("s_texture0", bgfx::UniformType::Uniform1iv);
+            bgfx::setTexture(0, s_texture0, texture);
+            _shader = _textureShader;
+        }
+
+        float translationMatrix[16] = { 0 };
+        bx::mtxTranslate(translationMatrix, translation.x, translation.y, 0.0f);
+        bgfx::setTransform(translationMatrix);
+
+        bgfx::setProgram(_shader);
+        bgfx::setState(BGFX_STATE_RGB_WRITE
+            | BGFX_STATE_ALPHA_WRITE
+            | BGFX_STATE_MSAA
+            | BGFX_STATE_BLEND_NORMAL);
+        bgfx::submit(_viewNumber);
+
+        
+    }
+
+    _batchGeometry.clear();
+}
+// This is dynamic geometry, so we use a dynamic buffer for this. Here, we queue the geometry calls into a vector storing its appropriate info
+// At the frame call, we draw the entire collection and clear it.
+void RocketBgfxInterface::RenderGeometry(Rocket::Core::Vertex* vertices, int num_vertices, int* indices, int num_indices, Rocket::Core::TextureHandle texture, const Rocket::Core::Vector2f& translation) {
+    
+    const bgfx::Memory * vertexBuffer = nullptr;
+    const bgfx::Memory * indexBuffer = nullptr;
+    bgfx::TextureHandle _texture{ bgfx::invalidHandle };
+
+    if (num_indices) {
+        indexBuffer = bgfx::copy(indices, num_indices * sizeof(int));
+    }
+    vertexBuffer = bgfx::copy(vertices, num_vertices * sizeof(Rocket::Core::Vertex));
+
+    if (texture) {
+       _texture = _textureBuffers[texture];
+    }
+
+    _batchGeometry.push_back(std::make_tuple(vertexBuffer, indexBuffer, _texture, translation));
+}
+// We store the compiled geometry internally as a tuple, and then reference it based on an int index handle we give back to rocket.
+// Rocket provides INT32 indexes, RBGA8 textures and its vertex data defined in the header. we just compile them up into static buffers and go.
+Rocket::Core::CompiledGeometryHandle RocketBgfxInterface::CompileGeometry(
+    Rocket::Core::Vertex* vertices,
+    int num_vertices,
+    int* indices, int num_indices,
+    Rocket::Core::TextureHandle texture)
+{
+    int returnIndex = _currentGeometryIndex;
+    if (returnIndex < 1)
+        returnIndex = 1;
+
+    bgfx::VertexBufferHandle vertexBuffer{ bgfx::invalidHandle };
+    bgfx::IndexBufferHandle indexBuffer{ bgfx::invalidHandle };
+    bgfx::TextureHandle _texture{ bgfx::invalidHandle };
+
+    if (num_indices) {
+        indexBuffer = bgfx::createIndexBuffer(bgfx::copy(indices, num_indices * sizeof(int32_t)), BGFX_BUFFER_INDEX32);
+    }
+
+    vertexBuffer = bgfx::createVertexBuffer(
+        bgfx::copy(vertices, num_vertices * sizeof(Rocket::Core::Vertex)),
+        RocketVertexData::ms_decl);
+
+    if (texture) {
+        _texture = _textureBuffers[texture];
+    }
+
+    _geometry[returnIndex] = std::make_tuple(vertexBuffer, indexBuffer, _texture);
+
+    _currentGeometryIndex = returnIndex + 1;
+    return static_cast<Rocket::Core::CompiledGeometryHandle>(returnIndex);
+}
+
+void RocketBgfxInterface::RenderCompiledGeometry(
+    Rocket::Core::CompiledGeometryHandle geometry,
+    const Rocket::Core::Vector2f& translation)
+{
+    int requestedIndex = static_cast<int>(geometry);
+
+    bgfx::VertexBufferHandle vertexBuffer;
+    bgfx::IndexBufferHandle indexBuffer;
+    bgfx::TextureHandle texture;
+
+    bgfx::ProgramHandle shader = _colorShader;
+
+    float translationMatrix[16] = { 0 };
+    bx::mtxTranslate(translationMatrix, translation.x, translation.y, 0.0f);
+    bgfx::setTransform(translationMatrix);
+
+    std::tie(vertexBuffer, indexBuffer, texture) = _geometry[requestedIndex];
+    if (bgfx::isValid(texture)) {
+        bgfx::UniformHandle s_texture0 = bgfx::createUniform("s_texture0", bgfx::UniformType::Uniform1iv);
+        bgfx::setTexture(0, s_texture0, texture);
+        shader = _textureShader;
+    }
+
+    bgfx::setVertexBuffer(vertexBuffer);
+    if (bgfx::isValid(indexBuffer)) {
+        bgfx::setIndexBuffer(indexBuffer);
     }
     
-    // 
-    // End librocket integration code
-    //
-    
-    while (!entry::processEvents(width, height, debug, reset, &mouseState) )
-	{
-		int64_t now = bx::getHPCounter();
-		static int64_t last = now;
-		const int64_t frameTime = now - last;
-		last = now;
-		const double freq = double(bx::getHPFrequency() );
-		const double toMs = 1000.0/freq;
+    bgfx::setProgram(shader);
+    bgfx::setState(BGFX_STATE_RGB_WRITE
+        | BGFX_STATE_ALPHA_WRITE
+        | BGFX_STATE_MSAA
+        | BGFX_STATE_BLEND_NORMAL);
+    bgfx::submit(_viewNumber);
+}
+void RocketBgfxInterface::ReleaseCompiledGeometry(Rocket::Core::CompiledGeometryHandle geometry) {
+    bgfx::VertexBufferHandle vertexBuffer;
+    bgfx::IndexBufferHandle indexBuffer;
+    bgfx::TextureHandle texture;
 
-		float time = (float)( (now-timeOffset)/double(bx::getHPFrequency() ) );
-		const float deltaTime = float(frameTime/freq);
+    int requestedIndex = static_cast<int>(geometry);
 
-		// Use debug font to print information about this example.
-		bgfx::dbgTextClear();
-        
-		bgfx::dbgTextPrintf(0, 1, 0x4f, "librocket integration test : Renderer: %s", 
-            bgfx::getRendererName(bgfx::getRendererType()));
-		bgfx::dbgTextPrintf(0, 2, 0x0f, "Frame: %.2f[ms], %.2f[fps]", 
-            double(frameTime)*toMs, 
-            1000.0f/(double(frameTime)*toMs));
+    std::tie(vertexBuffer, indexBuffer, texture) = _geometry[requestedIndex];
+    bgfx::destroyVertexBuffer(vertexBuffer);
+    bgfx::destroyIndexBuffer(indexBuffer);
 
-        float at[3] = { 0.0f, 0.0f,   0.0f };
-        float eye[3] = { 0.0f, 0.0f, -35.0f };
-        float view[16];
+    _geometry.erase(requestedIndex);
+}
 
-        bx::mtxLookAt(view, eye, at);
+// Rocket does a call to scissor enable and THEN calls the scissor region sizing. This is backwards to bgfx as we just call 0/value to scissor, but inline with openGL.
+// So we have to internally track our scissor states of enabled/disabled and the values seperately, and re-set the bgfx scissor value every call.
+void RocketBgfxInterface::EnableScissorRegion(bool enable) {
+    _scissorParams.enabled = enable;
 
-        bgfx::setViewTransform(0, view, proj);
-        bgfx::setViewRect(0, 0, 0, width, height);
-        
-        // dummy submit
-        bgfx::submit(0);
+    if (_scissorParams.enabled && (_scissorParams.x > 0 || _scissorParams.y > 0 || _scissorParams.width > 0 || _scissorParams.height > 0)) {
+        bgfx::setViewScissor(_viewNumber, _scissorParams.x, _scissorParams.y, _scissorParams.width, _scissorParams.height);
+    }
+    else {
+        bgfx::setViewScissor(_viewNumber, 0, 0, 0, 0);
+    }
+    return;
+}
+void RocketBgfxInterface::SetScissorRegion(int x, int y, int w, int h) {
+    _scissorParams = { _scissorParams.enabled,
+        static_cast<uint16_t>(x),
+        static_cast<uint16_t>(y),
+        static_cast<uint16_t>(w) ,
+        static_cast<uint16_t>(h) };
 
-        // Pass librocket the buttons, and then render it.
-        injectRocketButtons(rocketContext, mouseState);
-        rocketContext->Update();
-        rocketContext->Render();
-        
-        bgfxRocket->frame();
-		bgfx::frame();
-	}
 
-    Rocket::Core::Shutdown();
-    
-	bgfx::destroyProgram(rocketColorProgram);
-    bgfx::destroyProgram(rocketTextureProgram);
-	bgfx::shutdown();
+    if (_scissorParams.enabled) {
+        bgfx::setViewScissor(_viewNumber, _scissorParams.x, _scissorParams.y, _scissorParams.width, _scissorParams.height);
+    }
+    else {
+        bgfx::setViewScissor(_viewNumber, 0, 0, 0, 0);
+    }
+}
+bool RocketBgfxInterface::LoadTexture(Rocket::Core::TextureHandle& texture_handle, Rocket::Core::Vector2i& texture_dimensions, const Rocket::Core::String& source) {
+    // We load a texture from a file into a buffer, pass it to GenerateTexture
+    // Load the image and get a pointer to the pixels in memory
+    int w = 0, h = 0, channels = 0;
+    unsigned char* ptr = stbi_load(source.CString(), &w, &h, &channels, STBI_rgb_alpha);
 
-	return 0;
+    // Throw error if the texture file didnt open and ready correctly
+    if (!(ptr && w && h)) {
+        throw std::runtime_error("RocketBgfxInterface::LoadTexture() - FAILED_TO_LOAD_IMAGE_FROM_FILE");
+    }
+
+    // Hand it off to the internal texture manager and then deallocate
+    bool ret = GenerateTexture(texture_handle, ptr, Rocket::Core::Vector2i(w, h));
+    free(ptr);
+
+    return ret;
+}
+bool RocketBgfxInterface::GenerateTexture(Rocket::Core::TextureHandle& texture_handle, const Rocket::Core::byte* source, const Rocket::Core::Vector2i& source_dimensions) {
+    int returnIndex = _currentTextureIndex;
+
+    // Create the new texture handle
+    const bgfx::Memory *sourceMemory = bgfx::copy(source, source_dimensions.x * source_dimensions.y * sizeof(uint32_t));
+    //const bgfx::Memory *sourceMemory = bgfx::makeRef(source, source_dimensions.x * source_dimensions.y * sizeof(uint32_t));
+    bgfx::TextureHandle texHandle = bgfx::createTexture2D(source_dimensions.x, source_dimensions.y,
+        1, bgfx::TextureFormat::RGBA8,
+        (BGFX_TEXTURE_U_CLAMP | BGFX_TEXTURE_V_CLAMP) | (BGFX_TEXTURE_MIN_POINT | BGFX_TEXTURE_MAG_POINT),
+        sourceMemory);
+
+    // Save the texture reference
+    _textureBuffers[returnIndex] = texHandle;
+
+    _currentTextureIndex = _currentTextureIndex + 1;
+    texture_handle = returnIndex;
+
+    return true;
+}
+void RocketBgfxInterface::ReleaseTexture(Rocket::Core::TextureHandle texture) {
+    int requestedIndex = static_cast<int>(texture);
+
+    if (_textureBuffers.find(requestedIndex) != _textureBuffers.end()) {
+        bgfx::destroyTexture(_textureBuffers[requestedIndex]);  // clear the texture handle
+        _textureBuffers.erase(requestedIndex);
+    }
+
+    return;
 }
