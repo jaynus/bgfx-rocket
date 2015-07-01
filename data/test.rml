@@ -1,0 +1,40 @@
+<rml>
+   <head>
+   <style>
+      body
+      {
+         font-family: Delicious;
+         font-weight: normal;
+         font-style: normal;
+         font-size: 15;
+         color: black;
+      }
+
+      div#parent
+      {
+         position: absolute;top: 300px; left: 300px; 
+         display: block;
+         width: 350px;
+         height: 53px;
+         background-color: red;
+      }
+
+      #child
+      {
+         display: inline-block;
+         margin-left: 15px;
+         margin-top: 5px;
+         padding-left: 10px;
+         padding-right: 20px;
+         height: 33px;
+         background-color: yellow;
+      }
+   </style>
+
+   </head>
+   <body>
+      <div id="parent">
+         <div id="child">Title 123 Title 123  Title 123 </div>
+      </div>   
+   </body>
+</rml>
